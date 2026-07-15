@@ -1,0 +1,5 @@
+from .retinaface_service import RetinaFaceService
+from .deepface_service import DeepFaceService
+from .face_recognition_service import FaceRecognitionService
+from .opencv_service import OpenCVService
+from .recognition_service import RecognitionService

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual Environment
+.venv/
+venv/
+
+# Environment
+.env
+backend/.env
+
+# Database
+db.sqlite3
+backend/db.sqlite3
+
+# Media
+backend/media/
+
+# Node
+node_modules/
+
+# React
+frontend/dist/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
