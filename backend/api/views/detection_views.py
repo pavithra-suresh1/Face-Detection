@@ -369,7 +369,7 @@ def _live_recognize(img):
     for face in tracked:
         tid = face["track_id"]
         previous = _last_labels.get(tid)
-        if previous and previous["is_known"] and previous["confidence"] >= 90:
+        if previous and previous["is_known"]:
             continue
         faces_to_recognize.append(face)
 

@@ -5,7 +5,7 @@ import { liveDetect } from '../api/faceApi'
 const CAPTURE_W = 640
 const CAPTURE_H = 480
 const FRAME_SKIP = 2
-const BOX_SMOOTH = 0.40
+const BOX_SMOOTH = 0.45
 const CORNER_LEN = 16
 const CORNER_THICK = 3
 
@@ -19,10 +19,12 @@ export default function RealtimeDetection() {
   const smoothRef = useRef({})
   const startedRef = useRef(false)
   const scanRef = useRef(0)
-  const lastFacesRef = useRef([])
+  const fadeRef = useRef({})
+  const tsRef = useRef(0)
 
   const [ready, setReady] = useState(false)
   const [faces, setFaces] = useState([])
+  const facesRef = useRef([])
   const [latency, setLatency] = useState(null)
   const [error, setError] = useState('')
   const [registeredCount, setRegisteredCount] = useState(0)
@@ -32,15 +34,13 @@ export default function RealtimeDetection() {
     ctx.strokeStyle = color
     ctx.lineWidth = thick
     ctx.lineCap = 'round'
-
     const dirs = [
-      [x, y, 1, 1, x + len, y, x, y + len],
-      [x + w, y, -1, 1, x + w - len, y, x + w, y + len],
-      [x, y + h, 1, -1, x + len, y + h, x, y + h - len],
-      [x + w, y + h, -1, -1, x + w - len, y + h, x + w, y + h - len],
+      [x, y, x + len, y, x, y + len],
+      [x + w, y, x + w - len, y, x + w, y + len],
+      [x, y + h, x + len, y + h, x, y + h - len],
+      [x + w, y + h, x + w - len, y + h, x + w, y + h - len],
     ]
-
-    for (const [cx, cy, dx, dy, hx, hy, vx, vy] of dirs) {
+    for (const [cx, cy, hx, hy, vx, vy] of dirs) {
       ctx.beginPath()
       ctx.moveTo(hx, hy)
       ctx.lineTo(cx, cy)
@@ -57,7 +57,18 @@ export default function RealtimeDetection() {
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, vw, vh)
     const sm = smoothRef.current
+    const fd = fadeRef.current
     const a = BOX_SMOOTH
+    const now = performance.now()
+
+    const activeIds = new Set(detected.map(f => String(f.track_id)))
+
+    for (const tid of Object.keys(fd)) {
+      if (!activeIds.has(tid) && (now - fd[tid].t) > 300) {
+        delete fd[tid]
+        delete sm[tid]
+      }
+    }
 
     for (const face of detected) {
       const r = face.region
@@ -77,41 +88,81 @@ export default function RealtimeDetection() {
         if (k) sm[k] = { ...s }
       }
 
+      if (k && !fd[k]) {
+        fd[k] = { t: now, opacity: 0 }
+      }
+      const fade = fd[k]
+      if (fade) {
+        fade.opacity = Math.min(1, fade.opacity + 0.15)
+        fade.t = now
+      }
+      const opacity = fade ? fade.opacity : 1
+
       const known = face.is_known
       const checking = face.status === 'checking'
       const color = checking ? '#f59e0b' : known ? '#22c55e' : '#ef4444'
-      const colorDim = checking ? 'rgba(245,158,11,0.08)' : known ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'
+      const colorDim = checking
+        ? `rgba(245,158,11,${0.08 * opacity})`
+        : known
+          ? `rgba(34,197,94,${0.08 * opacity})`
+          : `rgba(239,68,68,${0.08 * opacity})`
+
+      ctx.globalAlpha = opacity
 
       ctx.fillStyle = colorDim
       ctx.fillRect(s.x, s.y, s.w, s.h)
 
+      if (known) {
+        ctx.shadowColor = 'rgba(34,197,94,0.3)'
+        ctx.shadowBlur = 12
+      }
+
       const cornerLen = Math.min(CORNER_LEN, Math.floor(Math.min(s.w, s.h) * 0.25))
       drawCornerBox(ctx, s.x, s.y, s.w, s.h, color, cornerLen, CORNER_THICK)
 
+      ctx.shadowColor = 'transparent'
+      ctx.shadowBlur = 0
+
       const label = face.label || (checking ? 'Identifying...' : 'Unknown')
       const confText = face.confidence > 0 && !checking ? `${face.confidence.toFixed(0)}%` : ''
-      const displayText = confText ? `${label} · ${confText}` : label
+      const displayText = confText ? `${label}  ${confText}` : label
 
-      ctx.font = 'bold 13px system-ui, -apple-system, sans-serif'
+      ctx.font = 'bold 12px system-ui, -apple-system, sans-serif'
       const tw = ctx.measureText(displayText).width
       const padX = 10
       const lx = s.x
-      const ly = s.y - 32 < 0 ? s.y + 6 : s.y - 32
+      const ly = s.y - 30 < 0 ? s.y + 6 : s.y - 30
 
-      ctx.fillStyle = checking ? 'rgba(245,158,11,0.88)' : known ? 'rgba(34,197,94,0.88)' : 'rgba(239,68,68,0.88)'
+      const bgColor = checking ? 'rgba(245,158,11,0.92)' : known ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)'
+      ctx.fillStyle = bgColor
       ctx.beginPath()
-      ctx.roundRect(lx, ly, tw + padX * 2, 24, 4)
+      ctx.roundRect(lx, ly, tw + padX * 2, 22, 4)
       ctx.fill()
 
       ctx.fillStyle = '#fff'
       ctx.textBaseline = 'middle'
-      ctx.fillText(displayText, lx + padX, ly + 12)
+      ctx.fillText(displayText, lx + padX, ly + 11)
       ctx.textBaseline = 'alphabetic'
+
+      ctx.globalAlpha = 1
     }
 
-    const ids = new Set(detected.map(f => String(f.track_id)))
-    for (const k of Object.keys(sm)) {
-      if (!ids.has(k)) delete sm[k]
+    for (const tid of Object.keys(fd)) {
+      if (!activeIds.has(tid)) {
+        const fade = fd[tid]
+        const remaining = 1 - (now - fade.t) / 300
+        if (remaining > 0 && sm[tid]) {
+          fade.opacity = remaining
+          const s = sm[tid]
+          ctx.globalAlpha = remaining
+          ctx.strokeStyle = 'rgba(255,255,255,0.3)'
+          ctx.lineWidth = 1
+          ctx.setLineDash([4, 4])
+          ctx.strokeRect(s.x, s.y, s.w, s.h)
+          ctx.setLineDash([])
+          ctx.globalAlpha = 1
+        }
+      }
     }
   }, [drawCornerBox])
 
@@ -181,9 +232,9 @@ export default function RealtimeDetection() {
                 h: Math.round(f.region.h * scaleY),
               },
             }))
-            lastFacesRef.current = detected
+            tsRef.current = Date.now()
+            facesRef.current = detected
             setFaces(detected)
-            drawBoxes(detected, v.videoWidth, v.videoHeight)
             setError('')
           } else if (res.message) {
             setError(res.message)
@@ -200,13 +251,12 @@ export default function RealtimeDetection() {
       frameRef.current++
       if (frameRef.current % FRAME_SKIP === 0) tick()
 
-      const current = lastFacesRef.current
       const vw = webcamRef.current?.video?.videoWidth || CAPTURE_W
       const vh = webcamRef.current?.video?.videoHeight || CAPTURE_H
 
-      if (current.length > 0) {
-        drawBoxes(current, vw, vh)
-      } else {
+      drawBoxes(facesRef.current, vw, vh)
+
+      if (facesRef.current.length === 0) {
         drawScanOverlay(vw, vh)
       }
 
@@ -228,30 +278,32 @@ export default function RealtimeDetection() {
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_6px_rgba(34,197,94,0.6)]" />
             <span className="text-green-400 text-xs font-bold tracking-[0.15em] uppercase">Live</span>
           </div>
-          {faces.length > 0 && (
-            <div className="flex items-center gap-3 text-xs">
-              <span className="text-slate-500">|</span>
-              <span className="text-slate-300 font-medium">{faces.length} face{faces.length > 1 ? 's' : ''}</span>
-              {knownCount > 0 && (
-                <span className="flex items-center gap-1 text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  {knownCount} known
-                </span>
-              )}
-              {unknownCount > 0 && (
-                <span className="flex items-center gap-1 text-red-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                  {unknownCount} unknown
-                </span>
-              )}
-              {checkingCount > 0 && (
-                <span className="flex items-center gap-1 text-amber-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  {checkingCount} checking
-                </span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-3 text-xs transition-all duration-200">
+            {faces.length > 0 && (
+              <>
+                <span className="text-slate-500">|</span>
+                <span className="text-slate-300 font-medium">{faces.length} face{faces.length > 1 ? 's' : ''}</span>
+              </>
+            )}
+            {knownCount > 0 && (
+              <span className="flex items-center gap-1 text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                {knownCount} known
+              </span>
+            )}
+            {unknownCount > 0 && (
+              <span className="flex items-center gap-1 text-red-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                {unknownCount} unknown
+              </span>
+            )}
+            {checkingCount > 0 && (
+              <span className="flex items-center gap-1 text-amber-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                {checkingCount} checking
+              </span>
+            )}
+          </div>
           {registeredCount > 0 && (
             <span className="text-[10px] text-slate-600 font-mono">
               {registeredCount} registered
@@ -260,7 +312,7 @@ export default function RealtimeDetection() {
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
           {latency !== null && (
-            <span className={`px-2 py-0.5 rounded ${latency < 200 ? 'bg-emerald-500/15 text-emerald-400' : latency < 400 ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
+            <span className={`px-2 py-0.5 rounded transition-colors duration-300 ${latency < 200 ? 'bg-emerald-500/15 text-emerald-400' : latency < 400 ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
               {latency}ms
             </span>
           )}
@@ -291,7 +343,7 @@ export default function RealtimeDetection() {
           )}
 
           {ready && faces.length === 0 && !error && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none">
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none transition-opacity duration-200">
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-black/50 backdrop-blur-sm border border-white/5">
                 <div className="w-1 h-1 rounded-full bg-blue-400 animate-pulse" />
                 <span className="text-[11px] text-white/30 tracking-wide">SCANNING</span>
@@ -344,13 +396,13 @@ export default function RealtimeDetection() {
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-              {faces.map((f, i) => {
+              {faces.map((f) => {
                 const known = f.is_known
                 const checking = f.status === 'checking'
                 return (
                   <div
-                    key={f.track_id ?? i}
-                    className={`relative flex items-center gap-3 px-4 py-3 rounded-lg border transition-colors ${
+                    key={f.track_id}
+                    className={`relative flex items-center gap-3 px-4 py-3 rounded-lg border transition-all duration-300 ease-out ${
                       checking
                         ? 'bg-amber-500/[0.06] border-amber-500/20'
                         : known
@@ -358,17 +410,21 @@ export default function RealtimeDetection() {
                           : 'bg-red-500/[0.06] border-red-500/20'
                     }`}
                   >
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-white text-xs font-bold ${
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-white text-xs font-bold transition-colors duration-300 ${
                       checking
                         ? 'bg-amber-500/20 text-amber-400'
                         : known
                           ? 'bg-emerald-500/20 text-emerald-400'
                           : 'bg-red-500/20 text-red-400'
                     }`}>
-                      {checking ? '...' : known ? (f.label?.[0]?.toUpperCase() ?? '?') : '?'}
+                      {checking ? (
+                        <div className="w-3 h-3 border-2 border-amber-400/40 border-t-amber-400 rounded-full animate-spin" />
+                      ) : known ? (
+                        f.label?.[0]?.toUpperCase() ?? '?'
+                      ) : '?'}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-semibold truncate ${
+                      <p className={`text-sm font-semibold truncate transition-colors duration-300 ${
                         checking ? 'text-amber-400' : known ? 'text-emerald-400' : 'text-red-400'
                       }`}>
                         {checking ? 'Identifying...' : (f.label || 'Unknown')}
@@ -377,7 +433,7 @@ export default function RealtimeDetection() {
                         <div className="flex items-center gap-2 mt-1">
                           <div className="flex-1 h-1 rounded-full bg-white/5 overflow-hidden">
                             <div
-                              className={`h-full rounded-full ${known ? 'bg-emerald-500/60' : 'bg-red-500/60'}`}
+                              className={`h-full rounded-full transition-all duration-500 ${known ? 'bg-emerald-500/60' : 'bg-red-500/60'}`}
                               style={{ width: `${Math.min(100, f.confidence)}%` }}
                             />
                           </div>
@@ -385,7 +441,7 @@ export default function RealtimeDetection() {
                         </div>
                       )}
                     </div>
-                    <span className={`text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded ${
+                    <span className={`text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded transition-colors duration-300 ${
                       checking
                         ? 'bg-amber-500/15 text-amber-500/70'
                         : known

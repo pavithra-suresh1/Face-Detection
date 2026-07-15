@@ -11,6 +11,10 @@ class FaceTracker:
 
     def update(self, detections):
         now = time.time()
+
+        for t in self._tracks.values():
+            t["matched_this_frame"] = False
+
         if not self._tracks:
             for d in detections:
                 self._create_track(d, now)
@@ -82,11 +86,13 @@ class FaceTracker:
             "confidence": det.get("confidence", 0),
             "first_seen": now,
             "last_seen": now,
+            "matched_this_frame": True,
         }
 
     def _update_track(self, tid, det, now):
         t = self._tracks[tid]
         t["last_seen"] = now
+        t["matched_this_frame"] = True
         a = self._smoothing
         sb, rb = t["smooth_box"], det
         sb["x"] = int(sb["x"] * (1 - a) + rb["x"] * a)
@@ -101,6 +107,8 @@ class FaceTracker:
     def _export(self):
         out = []
         for tid, t in self._tracks.items():
+            if not t["matched_this_frame"]:
+                continue
             out.append({
                 "track_id": tid,
                 "region": dict(t["smooth_box"]),
