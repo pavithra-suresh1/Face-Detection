@@ -53,5 +53,23 @@
   "reference_images": {
     "min_count": 3,
     "max_count": 5
+  },
+  "preprocessing_enhancement": {
+    "dark_brightness_threshold": 50,
+    "dark_brightness_soft_threshold": 80,
+    "bright_brightness_threshold": 200,
+    "bright_brightness_soft_threshold": 170,
+    "dark_gamma": 0.6,
+    "dark_gamma_soft": 0.5,
+    "bright_gamma": 1.4,
+    "bright_gamma_soft": 1.5,
+    "backlit_gamma": 0.7,
+    "shadowed_gamma": 0.65,
+    "backlit_dark_ratio": 0.40,
+    "backlit_bright_ratio": 0.15,
+    "shadowed_dark_ratio": 0.45,
+    "low_std_threshold": 30,
+    "live_dark_threshold": 60,
+    "live_bright_threshold": 200
   }
 }

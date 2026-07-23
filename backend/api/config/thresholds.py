@@ -38,6 +38,22 @@ _SECTION_MAP = {
     "FACE_VALIDATION_MIN_CONFIDENCE":("face_validation", "min_confidence"),
     "REFERENCE_MIN_IMAGES":         ("reference_images", "min_count"),
     "REFERENCE_MAX_IMAGES":         ("reference_images", "max_count"),
+    "PREPROCESS_DARK_THRESHOLD":    ("preprocessing_enhancement", "dark_brightness_threshold"),
+    "PREPROCESS_DARK_SOFT":         ("preprocessing_enhancement", "dark_brightness_soft_threshold"),
+    "PREPROCESS_BRIGHT_THRESHOLD":  ("preprocessing_enhancement", "bright_brightness_threshold"),
+    "PREPROCESS_BRIGHT_SOFT":       ("preprocessing_enhancement", "bright_brightness_soft_threshold"),
+    "PREPROCESS_DARK_GAMMA":        ("preprocessing_enhancement", "dark_gamma"),
+    "PREPROCESS_DARK_GAMMA_SOFT":   ("preprocessing_enhancement", "dark_gamma_soft"),
+    "PREPROCESS_BRIGHT_GAMMA":      ("preprocessing_enhancement", "bright_gamma"),
+    "PREPROCESS_BRIGHT_GAMMA_SOFT": ("preprocessing_enhancement", "bright_gamma_soft"),
+    "PREPROCESS_BACKLIT_GAMMA":     ("preprocessing_enhancement", "backlit_gamma"),
+    "PREPROCESS_SHADOWED_GAMMA":    ("preprocessing_enhancement", "shadowed_gamma"),
+    "PREPROCESS_BACKLIT_DARK_RATIO":("preprocessing_enhancement", "backlit_dark_ratio"),
+    "PREPROCESS_BACKLIT_BRIGHT_RATIO":("preprocessing_enhancement","backlit_bright_ratio"),
+    "PREPROCESS_SHADOWED_DARK_RATIO":("preprocessing_enhancement","shadowed_dark_ratio"),
+    "PREPROCESS_LOW_STD":           ("preprocessing_enhancement", "low_std_threshold"),
+    "PREPROCESS_LIVE_DARK":         ("preprocessing_enhancement", "live_dark_threshold"),
+    "PREPROCESS_LIVE_BRIGHT":       ("preprocessing_enhancement", "live_bright_threshold"),
 }
 
 

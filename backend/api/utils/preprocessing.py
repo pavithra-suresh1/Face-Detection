@@ -382,6 +382,140 @@ class ImagePreprocessor:
         l = clahe.apply(l)
         return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
+    @staticmethod
+    def detect_lighting_condition(img):
+        if img is None:
+            return "normal"
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        mean_brightness = float(np.mean(gray))
+        std_dev = float(np.std(gray))
+        dark_threshold = getattr(Thresholds, 'PREPROCESS_DARK_THRESHOLD', 50)
+        bright_threshold = getattr(Thresholds, 'PREPROCESS_BRIGHT_THRESHOLD', 200)
+        backlit_dark_ratio = getattr(Thresholds, 'PREPROCESS_BACKLIT_DARK_RATIO', 0.40)
+        backlit_bright_ratio = getattr(Thresholds, 'PREPROCESS_BACKLIT_BRIGHT_RATIO', 0.15)
+        shadowed_dark_ratio = getattr(Thresholds, 'PREPROCESS_SHADOWED_DARK_RATIO', 0.45)
+        low_std = getattr(Thresholds, 'PREPROCESS_LOW_STD', 30)
+        dark_ratio = float(np.mean(gray < 60))
+        bright_ratio = float(np.mean(gray > 200))
+        if mean_brightness < dark_threshold:
+            return "dark"
+        if mean_brightness > bright_threshold:
+            return "bright"
+        if dark_ratio > backlit_dark_ratio and bright_ratio > backlit_bright_ratio:
+            return "backlit"
+        if dark_ratio > shadowed_dark_ratio:
+            return "shadowed"
+        if std_dev < low_std and mean_brightness < 90:
+            return "dark"
+        if std_dev < low_std and mean_brightness > 180:
+            return "bright"
+        return "normal"
+
+    @staticmethod
+    def auto_brightness_contrast(img):
+        if img is None:
+            return img
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        low = float(np.percentile(gray, 1))
+        high = float(np.percentile(gray, 99))
+        if high - low < 15:
+            return img
+        alpha = 255.0 / (high - low)
+        beta = -low * alpha
+        adjusted = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
+        return adjusted
+
+    @staticmethod
+    def gamma_correction(img, gamma=None):
+        if img is None:
+            return img
+        if gamma is None:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            mean_brightness = float(np.mean(gray))
+            dark_threshold = getattr(Thresholds, 'PREPROCESS_DARK_THRESHOLD', 50)
+            dark_soft = getattr(Thresholds, 'PREPROCESS_DARK_SOFT', 80)
+            bright_threshold = getattr(Thresholds, 'PREPROCESS_BRIGHT_THRESHOLD', 200)
+            bright_soft = getattr(Thresholds, 'PREPROCESS_BRIGHT_SOFT', 170)
+            dark_gamma = getattr(Thresholds, 'PREPROCESS_DARK_GAMMA', 0.6)
+            dark_gamma_soft = getattr(Thresholds, 'PREPROCESS_DARK_GAMMA_SOFT', 0.5)
+            bright_gamma = getattr(Thresholds, 'PREPROCESS_BRIGHT_GAMMA', 1.4)
+            bright_gamma_soft = getattr(Thresholds, 'PREPROCESS_BRIGHT_GAMMA_SOFT', 1.5)
+            if mean_brightness < dark_threshold:
+                gamma = 1.0 / max(0.3, dark_gamma + (dark_threshold - mean_brightness) / 200.0)
+            elif mean_brightness < dark_soft:
+                gamma = 1.0 / max(0.5, dark_gamma_soft + (dark_soft - mean_brightness) / 100.0)
+            elif mean_brightness > bright_threshold:
+                gamma = 1.0 / min(2.0, bright_gamma + (mean_brightness - bright_threshold) / 100.0)
+            elif mean_brightness > bright_soft:
+                gamma = 1.0 / min(1.5, bright_gamma_soft + (mean_brightness - bright_soft) / 100.0)
+            else:
+                return img
+        inv_gamma = 1.0 / gamma
+        table = np.array(
+            [((i / 255.0) ** inv_gamma) * 255 for i in range(256)],
+            dtype=np.uint8,
+        )
+        return cv2.LUT(img, table)
+
+    @staticmethod
+    def normalize_image(img):
+        if img is None:
+            return img
+        result = img.astype(np.float32)
+        result = (result - 127.5) / 128.0
+        result = np.clip(result, -1.0, 1.0)
+        return ((result + 1.0) * 127.5).astype(np.uint8)
+
+    @classmethod
+    def enhance_for_detection(cls, img):
+        if img is None:
+            return img
+        lighting = cls.detect_lighting_condition(img)
+        if lighting == "normal":
+            img = cls.clahe_enhance(img)
+            return img
+        backlit_inv = getattr(Thresholds, 'PREPROCESS_BACKLIT_GAMMA', 0.7)
+        shadowed_inv = getattr(Thresholds, 'PREPROCESS_SHADOWED_GAMMA', 0.65)
+        dark_inv = getattr(Thresholds, 'PREPROCESS_DARK_GAMMA', 0.6)
+        bright_inv = getattr(Thresholds, 'PREPROCESS_BRIGHT_GAMMA', 1.4)
+        backlit_gamma = 1.0 / backlit_inv
+        shadowed_gamma = 1.0 / shadowed_inv
+        dark_gamma = 1.0 / dark_inv
+        bright_gamma = 1.0 / bright_inv
+        if lighting == "dark":
+            img = cls.auto_brightness_contrast(img)
+            img = cls.gamma_correction(img, gamma=dark_gamma)
+            img = cls.clahe_enhance(img)
+        elif lighting == "bright":
+            img = cls.gamma_correction(img, gamma=bright_gamma)
+            img = cls.auto_brightness_contrast(img)
+            img = cls.clahe_enhance(img)
+        elif lighting == "backlit":
+            img = cls.clahe_enhance(img)
+            img = cls.auto_brightness_contrast(img)
+            img = cls.gamma_correction(img, gamma=backlit_gamma)
+            img = cls.clahe_enhance(img)
+        elif lighting == "shadowed":
+            img = cls.gamma_correction(img, gamma=shadowed_gamma)
+            img = cls.clahe_enhance(img)
+            img = cls.auto_brightness_contrast(img)
+        return img
+
+    @classmethod
+    def enhance_for_live(cls, img):
+        if img is None:
+            return img
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        mean_brightness = float(np.mean(gray))
+        live_dark = getattr(Thresholds, 'PREPROCESS_LIVE_DARK', 60)
+        live_bright = getattr(Thresholds, 'PREPROCESS_LIVE_BRIGHT', 200)
+        if mean_brightness < live_dark:
+            img = cls.gamma_correction(img, gamma=1.67)
+        elif mean_brightness > live_bright:
+            img = cls.gamma_correction(img, gamma=0.71)
+        img = cls.clahe_enhance(img)
+        return img
+
 
 class EmbeddingNormalizer:
 

@@ -69,6 +69,7 @@ def detect_faces(request):
         os.close(fd)
         if img_bgr is not None:
             img = ImagePreprocessor.auto_resize_numpy(img_bgr)
+            img = ImagePreprocessor.enhance_for_detection(img)
             cv2.imwrite(temp_path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
             detected = RetinaFaceService.detect_faces(temp_path)
         else:
@@ -87,7 +88,7 @@ def detect_faces(request):
     faces_data = []
     temp_paths = []
     for face_info in detected:
-        crop_path = _crop_and_save_face(image.image.path, face_info["region"], image=img_bgr)
+        crop_path = _crop_and_save_face(image.image.path, face_info["region"], image=img)
         if crop_path:
             temp_paths.append(crop_path)
         analysis_path = crop_path or image.image.path
@@ -98,7 +99,7 @@ def detect_faces(request):
     if recognize and face_validation["valid"] and face_validation["selected_face"]:
         selected = face_validation["selected_face"]
         selected_region = selected["region"]
-        crop_path = _crop_and_save_face(image.image.path, selected_region, image=img_bgr)
+        crop_path = _crop_and_save_face(image.image.path, selected_region, image=img)
         analysis_path = crop_path or image.image.path
         target_face = None
         for face_info in detected:
@@ -365,6 +366,7 @@ def _live_recognize(img):
             "is_known": False,
             "confidence": 0,
             "status": "no_registered",
+            "locked_at": now,
         } for face in tracked], registered_count
 
     _recognition_frame_counter += 1
@@ -378,22 +380,28 @@ def _live_recognize(img):
             tid = face["track_id"]
             previous = _last_labels.get(tid)
             if previous:
-                if previous["is_known"]:
+                prev_status = previous.get("status")
+                if prev_status == "unknown":
+                    continue
+                if prev_status == "recognized":
                     cache_age = now - previous.get("cache_time", 0)
                     if cache_age < _RECOGNITION_CACHE_TTL:
                         continue
                     else:
                         previous["cache_time"] = now
                         continue
-                else:
+                if prev_status == "checking":
                     retries = _recognition_retries.get(tid, 0)
                     if retries >= _MAX_RECOGNITION_RETRIES:
-                        cache_age = previous.get("cache_time", 0)
-                        if (now - cache_age) < _RECOGNITION_CACHE_TTL:
-                            continue
-                        else:
-                            _recognition_retries.pop(tid, None)
-                            _last_labels.pop(tid, None)
+                        region = face["region"]
+                        _recognition_retries.pop(tid, None)
+                        _last_labels[tid] = {
+                            "label": "Unknown", "is_known": False,
+                            "confidence": 0, "status": "unknown",
+                            "cache_time": now, "locked_at": now,
+                            "region": region,
+                        }
+                        continue
             faces_to_recognize.append(face)
 
         if faces_to_recognize:
@@ -410,7 +418,7 @@ def _live_recognize(img):
                         _last_labels[tid] = {
                             "label": match["name"], "is_known": True,
                             "confidence": conf, "status": "recognized",
-                            "cache_time": now,
+                            "cache_time": now, "locked_at": now,
                             "region": next((f["region"] for f in tracked if f["track_id"] == tid), {}),
                         }
                     else:
@@ -429,7 +437,7 @@ def _live_recognize(img):
                             _last_labels[tid] = {
                                 "label": "Unknown", "is_known": False,
                                 "confidence": conf, "status": "unknown",
-                                "cache_time": now,
+                                "cache_time": now, "locked_at": now,
                                 "region": region,
                             }
 
@@ -452,7 +460,7 @@ def _live_recognize(img):
             _last_labels[tid] = {
                 "label": "", "is_known": False,
                 "confidence": 0, "status": "checking",
-                "cache_time": now,
+                "cache_time": now, "locked_at": now,
                 "region": region,
             }
             results.append({
@@ -504,6 +512,7 @@ def live_detect(request):
         if img is None:
             return Response({"success": False, "message": "Invalid image."}, status=status.HTTP_400_BAD_REQUEST)
         img = ImagePreprocessor.auto_resize_numpy(img)
+        img = ImagePreprocessor.enhance_for_live(img)
         results, registered_count = _live_recognize(img)
         latency_ms = round((time.time() - t0) * 1000)
         logger.info("Live detect: %d face(s), %d registered, %dms", len(results), registered_count, latency_ms)
@@ -537,6 +546,7 @@ def live_capture(request):
         if img is None:
             return Response({"success": False, "message": "Invalid image."}, status=status.HTTP_400_BAD_REQUEST)
         img = ImagePreprocessor.auto_resize_numpy(img)
+        img = ImagePreprocessor.enhance_for_live(img)
         results, registered_count = _live_recognize(img)
         faces = []
         image_record = None
