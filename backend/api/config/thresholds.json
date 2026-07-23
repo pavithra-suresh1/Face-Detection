@@ -1,0 +1,57 @@
+{
+  "face_detection": {
+    "confidence": 0.70,
+    "min_size_px": 50
+  },
+  "recognition": {
+    "similarity_threshold": 0.40,
+    "confidence_threshold": 60.0,
+    "live_match_margin": 0.10,
+    "min_images_for_averaged": 3,
+    "individual_tolerance": 0.05,
+    "min_verified_images": 2
+  },
+  "live_performance": {
+    "recognition_frame_interval": 3,
+    "recognition_cache_ttl": 5.0,
+    "max_recognition_retries": 3,
+    "checking_timeout_frames": 6,
+    "embedding_detector_backend": "opencv"
+  },
+  "tracking": {
+    "expire_seconds": 3.0,
+    "match_score": 0.20,
+    "smoothing": 0.50,
+    "iou_ratio": 0.60,
+    "center_ratio": 0.40
+  },
+  "frontal_face": {
+    "aspect_min": 0.65,
+    "aspect_max": 1.45
+  },
+  "retinaface": {
+    "min_confidence": 0.90
+  },
+  "clahe": {
+    "clip_limit": 2.0,
+    "tile_size": [8, 8],
+    "max_dimension": 1000
+  },
+  "preprocessing": {
+    "max_dimension": 1600
+  },
+  "image_quality": {
+    "blur_threshold": 100.0,
+    "dark_threshold": 40.0,
+    "bright_threshold": 220.0,
+    "min_resolution": 100
+  },
+  "face_validation": {
+    "min_size": 80,
+    "min_confidence": 0.70
+  },
+  "reference_images": {
+    "min_count": 3,
+    "max_count": 5
+  }
+}

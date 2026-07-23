@@ -4,7 +4,7 @@ import { liveDetect } from '../api/faceApi'
 
 const CAPTURE_W = 640
 const CAPTURE_H = 480
-const FRAME_SKIP = 2
+const FRAME_SKIP = 3
 const BOX_SMOOTH = 0.45
 const CORNER_LEN = 16
 const CORNER_THICK = 3
@@ -21,6 +21,8 @@ export default function RealtimeDetection() {
   const scanRef = useRef(0)
   const fadeRef = useRef({})
   const tsRef = useRef(0)
+  const fpsRef = useRef({ frames: 0, lastTime: performance.now(), value: 0 })
+  const fpsDisplayRef = useRef(0)
 
   const [ready, setReady] = useState(false)
   const [faces, setFaces] = useState([])
@@ -28,6 +30,7 @@ export default function RealtimeDetection() {
   const [latency, setLatency] = useState(null)
   const [error, setError] = useState('')
   const [registeredCount, setRegisteredCount] = useState(0)
+  const [fps, setFps] = useState(0)
   const latBuf = useRef([])
 
   const drawCornerBox = useCallback((ctx, x, y, w, h, color, len, thick) => {
@@ -113,8 +116,11 @@ export default function RealtimeDetection() {
       ctx.fillRect(s.x, s.y, s.w, s.h)
 
       if (known) {
-        ctx.shadowColor = 'rgba(34,197,94,0.3)'
-        ctx.shadowBlur = 12
+        ctx.shadowColor = 'rgba(34,197,94,0.4)'
+        ctx.shadowBlur = 16
+      } else if (!checking) {
+        ctx.shadowColor = 'rgba(239,68,68,0.3)'
+        ctx.shadowBlur = 10
       }
 
       const cornerLen = Math.min(CORNER_LEN, Math.floor(Math.min(s.w, s.h) * 0.25))
@@ -123,25 +129,23 @@ export default function RealtimeDetection() {
       ctx.shadowColor = 'transparent'
       ctx.shadowBlur = 0
 
-      const label = face.label || (checking ? 'Identifying...' : 'Unknown')
-      const confText = face.confidence > 0 && !checking ? `${face.confidence.toFixed(0)}%` : ''
-      const displayText = confText ? `${label}  ${confText}` : label
+      const label = face.is_known ? (face.label || 'Known') : (checking ? 'Identifying...' : 'Unknown')
 
-      ctx.font = 'bold 12px system-ui, -apple-system, sans-serif'
-      const tw = ctx.measureText(displayText).width
+      ctx.font = 'bold 13px system-ui, -apple-system, sans-serif'
+      const tw = ctx.measureText(label).width
       const padX = 10
       const lx = s.x
-      const ly = s.y - 30 < 0 ? s.y + 6 : s.y - 30
+      const ly = s.y - 32 < 0 ? s.y + 8 : s.y - 32
 
-      const bgColor = checking ? 'rgba(245,158,11,0.92)' : known ? 'rgba(34,197,94,0.92)' : 'rgba(239,68,68,0.92)'
+      const bgColor = checking ? 'rgba(245,158,11,0.94)' : known ? 'rgba(34,197,94,0.94)' : 'rgba(239,68,68,0.94)'
       ctx.fillStyle = bgColor
       ctx.beginPath()
-      ctx.roundRect(lx, ly, tw + padX * 2, 22, 4)
+      ctx.roundRect(lx, ly, tw + padX * 2, 24, 4)
       ctx.fill()
 
       ctx.fillStyle = '#fff'
       ctx.textBaseline = 'middle'
-      ctx.fillText(displayText, lx + padX, ly + 11)
+      ctx.fillText(label, lx + padX, ly + 12)
       ctx.textBaseline = 'alphabetic'
 
       ctx.globalAlpha = 1
@@ -251,6 +255,17 @@ export default function RealtimeDetection() {
       frameRef.current++
       if (frameRef.current % FRAME_SKIP === 0) tick()
 
+      const fpsData = fpsRef.current
+      fpsData.frames++
+      const now = performance.now()
+      if (now - fpsData.lastTime >= 1000) {
+        fpsData.value = fpsData.frames
+        fpsData.frames = 0
+        fpsData.lastTime = now
+        fpsDisplayRef.current = fpsData.value
+        setFps(fpsData.value)
+      }
+
       const vw = webcamRef.current?.video?.videoWidth || CAPTURE_W
       const vh = webcamRef.current?.video?.videoHeight || CAPTURE_H
 
@@ -311,6 +326,11 @@ export default function RealtimeDetection() {
           )}
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
+          {fps > 0 && (
+            <span className={`px-2 py-0.5 rounded transition-colors duration-300 ${fps >= 25 ? 'bg-emerald-500/15 text-emerald-400' : fps >= 15 ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
+              {fps} FPS
+            </span>
+          )}
           {latency !== null && (
             <span className={`px-2 py-0.5 rounded transition-colors duration-300 ${latency < 200 ? 'bg-emerald-500/15 text-emerald-400' : latency < 400 ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
               {latency}ms
@@ -427,19 +447,9 @@ export default function RealtimeDetection() {
                       <p className={`text-sm font-semibold truncate transition-colors duration-300 ${
                         checking ? 'text-amber-400' : known ? 'text-emerald-400' : 'text-red-400'
                       }`}>
-                        {checking ? 'Identifying...' : (f.label || 'Unknown')}
+                        {checking ? 'Identifying...' : known ? (f.label || 'Known') : 'Unknown'}
                       </p>
-                      {f.confidence > 0 && !checking && (
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1 rounded-full bg-white/5 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${known ? 'bg-emerald-500/60' : 'bg-red-500/60'}`}
-                              style={{ width: `${Math.min(100, f.confidence)}%` }}
-                            />
-                          </div>
-                          <span className="text-[10px] text-white/30 font-mono">{f.confidence.toFixed(0)}%</span>
-                        </div>
-                      )}
+
                     </div>
                     <span className={`text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded transition-colors duration-300 ${
                       checking

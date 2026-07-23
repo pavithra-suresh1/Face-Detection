@@ -201,7 +201,6 @@ export default function Report() {
                   <tr>
                     <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase">Name</th>
-                    <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase">Confidence</th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase">Time</th>
                   </tr>
                 </thead>
@@ -216,9 +215,6 @@ export default function Report() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-900">{log.matched_name || '—'}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">
-                        {log.confidence != null ? `${log.confidence.toFixed(1)}%` : '—'}
-                      </td>
                       <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
                         {new Date(log.processed_at).toLocaleString()}
                       </td>

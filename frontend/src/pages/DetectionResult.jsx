@@ -29,6 +29,10 @@ export default function DetectionResult() {
     ? `http://localhost:8000${image.image}`
     : null
 
+  const faces = result?.faces || []
+  const registeredCount = faces.filter(f => f.is_known === true).length
+  const unregisteredCount = faces.filter(f => f.is_known === false).length
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6">
@@ -38,6 +42,23 @@ export default function DetectionResult() {
         </div>
         <Link to="/upload" className="text-primary-600 hover:text-primary-800 font-medium text-sm">Upload Another</Link>
       </div>
+
+      {faces.length > 0 && (
+        <div className="flex items-center gap-4 mb-6">
+          {registeredCount > 0 && (
+            <span className="flex items-center gap-1.5 text-sm text-green-700 bg-green-50 px-3 py-1.5 rounded-lg border border-green-200">
+              <span className="w-2 h-2 rounded-full bg-green-500" />
+              {registeredCount} registered
+            </span>
+          )}
+          {unregisteredCount > 0 && (
+            <span className="flex items-center gap-1.5 text-sm text-red-700 bg-red-50 px-3 py-1.5 rounded-lg border border-red-200">
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+              {unregisteredCount} unregistered
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         {originalUrl && (

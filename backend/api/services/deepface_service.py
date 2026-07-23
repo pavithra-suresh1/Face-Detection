@@ -2,6 +2,8 @@ import os
 import cv2
 import numpy as np
 from deepface import DeepFace
+from api.utils.preprocessing import ImagePreprocessor
+from api.utils.preprocessing import EmbeddingNormalizer
 
 
 class DeepFaceService:
@@ -16,34 +18,11 @@ class DeepFaceService:
         if image is None:
             return image_path
 
-        h, w = image.shape[:2]
-
-        if max(h, w) > 1000:
-            scale = 1000 / max(h, w)
-            image = cv2.resize(
-                image,
-                (int(w * scale), int(h * scale)),
-                interpolation=cv2.INTER_AREA
-            )
-
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-
-        clahe = cv2.createCLAHE(
-            clipLimit=2.0,
-            tileGridSize=(8, 8)
-        )
-
-        l = clahe.apply(l)
-
-        enhanced = cv2.merge((l, a, b))
-        enhanced = cv2.cvtColor(
-            enhanced,
-            cv2.COLOR_LAB2BGR
-        )
+        image = ImagePreprocessor.auto_resize_numpy(image)
+        image = ImagePreprocessor.clahe_enhance(image)
 
         denoised = cv2.fastNlMeansDenoisingColored(
-            enhanced,
+            image,
             None,
             10,
             10,
@@ -219,10 +198,7 @@ class DeepFaceService:
             dtype=np.float32
         )
 
-        norm = np.linalg.norm(vector)
-
-        if norm > 0:
-            vector = vector / norm
+        vector = EmbeddingNormalizer.normalize_l2(vector)
 
         return vector.tolist()
 

@@ -10,7 +10,6 @@ export default function History() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [editId, setEditId] = useState(null)
-  const [editConfidence, setEditConfidence] = useState('')
   const [editIsKnown, setEditIsKnown] = useState(false)
 
   const loadHistory = async (p) => {
@@ -31,7 +30,6 @@ export default function History() {
 
   const startEdit = (log) => {
     setEditId(log.id)
-    setEditConfidence(log.confidence != null ? String(log.confidence) : '')
     setEditIsKnown(log.is_known)
   }
 
@@ -43,7 +41,6 @@ export default function History() {
     try {
       await updateRecognitionLog(id, {
         is_known: editIsKnown,
-        confidence: editConfidence ? parseFloat(editConfidence) : null,
       })
       setEditId(null)
       loadHistory(page)
@@ -99,7 +96,6 @@ export default function History() {
                     <tr>
                       <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                       <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                      <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
                       <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Image ID</th>
                       <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -118,11 +114,6 @@ export default function History() {
                               </select>
                             </td>
                             <td className="px-6 py-4 text-sm font-medium text-gray-900">{log.matched_name || '—'}</td>
-                            <td className="px-6 py-4">
-                              <input type="number" step="0.1" min="0" max="100" value={editConfidence}
-                                onChange={(e) => setEditConfidence(e.target.value)}
-                                className="w-24 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-                            </td>
                             <td className="px-6 py-4 text-sm text-gray-400 font-mono">{log.image_id?.slice(0, 8)}...</td>
                             <td className="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">{new Date(log.processed_at).toLocaleString()}</td>
                             <td className="px-6 py-4 text-right">
@@ -148,17 +139,6 @@ export default function History() {
                               <Link to="/reports" className="text-sm font-medium text-gray-900 hover:text-primary-600 transition">
                                 {log.matched_name || '—'}
                               </Link>
-                            </td>
-                            <td className="px-6 py-4">
-                              {log.confidence != null ? (
-                                <div className="flex items-center gap-2">
-                                  <div className="w-20 bg-gray-200 rounded-full h-1.5">
-                                    <div className={`h-1.5 rounded-full ${log.confidence >= 70 ? 'bg-green-500' : log.confidence >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                                      style={{ width: `${Math.min(log.confidence, 100)}%` }}></div>
-                                  </div>
-                                  <span className="text-sm text-gray-500">{log.confidence.toFixed(1)}%</span>
-                                </div>
-                              ) : <span className="text-sm text-gray-400">—</span>}
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-400 font-mono">{log.image_id?.slice(0, 8)}...</td>
                             <td className="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">{new Date(log.processed_at).toLocaleString()}</td>

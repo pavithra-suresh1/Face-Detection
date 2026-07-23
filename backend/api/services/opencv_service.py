@@ -24,9 +24,9 @@ class OpenCVService:
             if is_known is True:
                 color = (0, 255, 0)
             elif is_known is False:
-                color = (0, 165, 255)
+                color = (0, 0, 255)
             else:
-                color = (0, 255, 0)
+                color = (200, 200, 200)
 
             cv2.rectangle(image, (x, y), (x + w, y + h), color, 3)
 

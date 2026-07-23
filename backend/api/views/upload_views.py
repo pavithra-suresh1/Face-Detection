@@ -1,9 +1,14 @@
+import logging
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from api.models import UploadedImage
 from api.serializers import ImageUploadSerializer, ImageListSerializer
 from api.utils.image_utils import get_image_dimensions, validate_image_file
+from api.utils.preprocessing import ImagePreprocessor
+from api.utils.preprocessing import ImageQualityValidator
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(["POST"])
@@ -20,6 +25,19 @@ def upload_image(request):
     serializer = ImageUploadSerializer(data=request.data, context={"request": request})
     if serializer.is_valid():
         uploaded = serializer.save(user=request.user if request.user.is_authenticated else None)
+        logger.info("Image uploaded: id=%s, file=%s", uploaded.id, file.name)
+
+        ImagePreprocessor.fix_exif_orientation(uploaded.image.path)
+        ImagePreprocessor.auto_resize(uploaded.image.path)
+
+        try:
+            ImageQualityValidator.validate_strict(uploaded.image.path)
+        except ValueError as e:
+            logger.info("Image %s rejected by quality check: %s", uploaded.id, e)
+            uploaded.image.delete(save=False)
+            uploaded.delete()
+            return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         width, height = get_image_dimensions(uploaded.image.path)
         uploaded.file_size = uploaded.image.size
         uploaded.width = width
@@ -78,4 +96,5 @@ def delete_image(request, pk):
     if image.processed_image:
         image.processed_image.delete(save=False)
     image.delete()
+    logger.info("Image deleted: id=%s", pk)
     return Response({"success": True, "message": "Image deleted."}, status=status.HTTP_200_OK)

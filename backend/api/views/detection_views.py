@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import uuid
@@ -17,10 +18,16 @@ from django.conf import settings
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from api.services.face_tracker import FaceTracker
+from api.utils.preprocessing import ImagePreprocessor
+from api.utils.preprocessing import ImageQualityValidator
+from api.utils.preprocessing import FaceValidator
+
+logger = logging.getLogger(__name__)
 
 
-def _crop_and_save_face(image_path, region, padding=0.3):
-    image = cv2.imread(image_path)
+def _crop_and_save_face(image_path, region, padding=0.3, image=None):
+    if image is None:
+        image = cv2.imread(image_path)
     if image is None:
         return None
     h_img, w_img = image.shape[:2]
@@ -44,7 +51,7 @@ def _crop_and_save_face(image_path, region, padding=0.3):
 @api_view(["POST"])
 def detect_faces(request):
     image_id = request.data.get("image_id")
-    recognize = request.data.get("recognize", False)
+    recognize = request.data.get("recognize", True)
     if not image_id:
         return Response({"success": False, "message": "image_id is required."}, status=status.HTTP_400_BAD_REQUEST)
     try:
@@ -53,36 +60,73 @@ def detect_faces(request):
         return Response({"success": False, "message": "Image not found."}, status=status.HTTP_404_NOT_FOUND)
     if not os.path.exists(image.image.path):
         return Response({"success": False, "message": "Image file not found on disk."}, status=status.HTTP_404_NOT_FOUND)
+    img_bgr = cv2.imread(image.image.path)
+    quality = ImageQualityValidator.validate_with_image(img_bgr)
+    logger.debug("Quality check for image %s: valid=%s, issues=%d", image_id, quality["valid"], len(quality["issues"]))
     try:
-        detected = RetinaFaceService.detect_faces(image.image.path)
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        if img_bgr is not None:
+            img = ImagePreprocessor.auto_resize_numpy(img_bgr)
+            cv2.imwrite(temp_path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            detected = RetinaFaceService.detect_faces(temp_path)
+        else:
+            detected = RetinaFaceService.detect_faces(image.image.path)
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
     except Exception as e:
         return Response({"success": False, "message": f"Face detection failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     if not detected:
+        logger.info("No faces detected in image %s", image_id)
         return Response({"success": True, "message": "No faces detected.", "faces": [], "face_count": 0})
+    logger.info("Detected %d face(s) in image %s", len(detected), image_id)
+    face_validation = FaceValidator.validate_faces(detected)
     faces_data = []
     temp_paths = []
     for face_info in detected:
-        crop_path = _crop_and_save_face(image.image.path, face_info["region"])
+        crop_path = _crop_and_save_face(image.image.path, face_info["region"], image=img_bgr)
         if crop_path:
             temp_paths.append(crop_path)
         analysis_path = crop_path or image.image.path
         detected_face = DetectedFace.objects.create(
             image=image, bounding_box=face_info["region"], face_confidence=face_info["confidence"],
         )
-        if recognize:
+        faces_data.append(DetectedFaceSerializer(detected_face).data)
+    if recognize and face_validation["valid"] and face_validation["selected_face"]:
+        selected = face_validation["selected_face"]
+        selected_region = selected["region"]
+        crop_path = _crop_and_save_face(image.image.path, selected_region, image=img_bgr)
+        analysis_path = crop_path or image.image.path
+        target_face = None
+        for face_info in detected:
+            if face_info["region"] == selected_region and face_info["confidence"] == selected["confidence"]:
+                break
+        for fd in faces_data:
+            if fd["bounding_box"] == selected_region:
+                target_face = fd
+                break
+        if target_face:
             try:
                 embedding = FaceRecognitionService.get_embedding(analysis_path)
                 if embedding:
-                    detected_face.embedding = embedding
-                    detected_face.save(update_fields=["embedding"])
+                    detected_face_obj = DetectedFace.objects.get(id=target_face["id"])
+                    detected_face_obj.embedding = embedding
+                    detected_face_obj.save(update_fields=["embedding"])
                     match, distance, confidence = RecognitionService.recognize_face(embedding)
+                    logger.info("Recognition for image %s: match=%s, distance=%.4f, confidence=%.2f",
+                                image_id, match.name if match else None, distance, confidence)
                     RecognitionLog.objects.create(
-                        detected_face=detected_face, matched_face=match,
+                        detected_face=detected_face_obj, matched_face=match,
                         confidence=confidence, is_known=match is not None,
                     )
             except Exception as e:
-             print("Recognition Error:", e)
-        faces_data.append(DetectedFaceSerializer(detected_face).data)
+                logger.exception("Recognition failed for image %s", image_id)
+            if crop_path and os.path.exists(crop_path):
+                try: os.remove(crop_path)
+                except: pass
     for path in temp_paths:
         try: os.remove(path)
         except: pass
@@ -110,6 +154,11 @@ def detect_faces(request):
     return Response({
         "success": True, "face_count": len(faces_data), "faces": faces_data,
         "processed_image": processed_url,
+        "quality_warnings": quality["issues"],
+        "face_validation": {
+            "valid": face_validation["valid"],
+            "issues": face_validation["issues"],
+        },
     })
 
 
@@ -120,6 +169,28 @@ _face_tracker = FaceTracker(
 )
 _last_labels = {}
 _known_label_history = []
+_recognition_retries = {}
+_recognition_frame_counter = 0
+
+try:
+    _RECOGNITION_INTERVAL = Thresholds.RECOGNITION_FRAME_INTERVAL
+except Exception:
+    _RECOGNITION_INTERVAL = 3
+
+try:
+    _RECOGNITION_CACHE_TTL = Thresholds.RECOGNITION_CACHE_TTL
+except Exception:
+    _RECOGNITION_CACHE_TTL = 5.0
+
+try:
+    _MAX_RECOGNITION_RETRIES = Thresholds.MAX_RECOGNITION_RETRIES
+except Exception:
+    _MAX_RECOGNITION_RETRIES = 3
+
+try:
+    _CHECKING_TIMEOUT = Thresholds.CHECKING_TIMEOUT_FRAMES
+except Exception:
+    _CHECKING_TIMEOUT = 6
 
 
 def _iou(a, b):
@@ -208,9 +279,9 @@ def _detect_human_faces(img):
     for face in detections:
         x, y, w, h = int(face[0]), int(face[1]), int(face[2]), int(face[3])
         score = float(face[-1])
-        if score < 0.80:
+        if score < Thresholds.FACE_VALIDATION_MIN_CONFIDENCE:
             continue
-        if w < 30 or h < 30:
+        if w < Thresholds.FACE_VALIDATION_MIN_SIZE or h < Thresholds.FACE_VALIDATION_MIN_SIZE:
             continue
         if not _is_frontal_face({"x": x, "y": y, "w": w, "h": h}):
             continue
@@ -219,66 +290,15 @@ def _detect_human_faces(img):
 
 
 def _live_match_known(emb):
-    cached = EmbeddingCache.get_all()
-
-    if not cached:
-        return None, 0.0
-
-    emb_array = np.asarray(emb, dtype=np.float32)
-    norm = np.linalg.norm(emb_array)
-    if norm == 0:
-        return None, 0.0
-    emb_norm = emb_array / norm
-
-    best_name = None
-    best_id = None
-    best_dist = float("inf")
-    per_person_best = {}
-
-    for entry in cached:
-        person_best = float("inf")
-        for known_norm in entry["normalized"]:
-            known_array = np.asarray(known_norm, dtype=np.float32)
-            known_array = known_array / np.linalg.norm(known_array)
-            d = float(1.0 - np.dot(emb_norm, known_array))
-            if d < person_best:
-                person_best = d
-        per_person_best[entry["name"]] = {"dist": person_best, "id": entry["id"]}
-        if person_best < best_dist:
-            best_dist = person_best
-            best_name = entry["name"]
-            best_id = entry["id"]
-
-    if best_name is None:
-        return None, 0.0
-
-    sorted_persons = sorted(per_person_best.items(), key=lambda x: x[1]["dist"])
-    second_best_dist = sorted_persons[1][1]["dist"] if len(sorted_persons) >= 2 else best_dist + 1.0
-
-    confidence = max(0.0, min(100.0, (1.0 - best_dist) * 100.0))
-    margin = second_best_dist - best_dist
-
-    similarity_ok = best_dist < Thresholds.SIMILARITY_THRESHOLD
-    confidence_ok = confidence >= Thresholds.CONFIDENCE_THRESHOLD
-    margin_ok = len(per_person_best) <= 1 or margin > Thresholds.LIVE_MATCH_MARGIN
-
-    if similarity_ok and confidence_ok and margin_ok:
-        return {"id": best_id, "name": best_name}, round(confidence, 2)
-
-    return None, round(confidence, 2)
-
-
-def _clahe_enhance(img):
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    lab = cv2.merge([l, a, b])
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    match, _distance, confidence = RecognitionService.recognize_face_cached(emb)
+    return match, confidence
 
 
 def _recognize_one_face(img, r, w_img, h_img):
-    pad = 0.25
+    if r["w"] < Thresholds.FACE_VALIDATION_MIN_SIZE or r["h"] < Thresholds.FACE_VALIDATION_MIN_SIZE:
+        return None, 0.0
+
+    pad = 0.15
     px = int(r["w"] * pad)
     py = int(r["h"] * pad)
     x1 = max(0, r["x"] - px)
@@ -294,42 +314,25 @@ def _recognize_one_face(img, r, w_img, h_img):
         return None, 0.0
 
     try:
-        crop = cv2.resize(crop, (160, 160))
-    except Exception:
-        return None, 0.0
-
-    try:
-        from deepface import DeepFace
-        reps = DeepFace.represent(
-            img_path=crop,
-            model_name=FaceRecognitionService.MODEL_NAME,
-            detector_backend="opencv",
-            enforce_detection=False,
-            align=True,
-        )
-        if not reps:
-            return None, 0.0
-
-        emb = np.asarray(reps[0]["embedding"], dtype=np.float32)
-        norm = np.linalg.norm(emb)
-        if norm == 0:
-            return None, 0.0
-        emb = emb / norm
-
-        match, confidence = _live_match_known(emb)
-        return match, confidence
+        emb = FaceRecognitionService.get_embedding_live(crop)
+        if emb is not None:
+            match, confidence = _live_match_known(np.asarray(emb, dtype=np.float32))
+            return match, confidence
     except Exception as e:
-        return None, 0.0
+        logger.debug("Live recognition failed: %s", e)
+
+    return None, 0.0
 
 
 def _live_recognize(img):
-    global _last_labels, _known_label_history
+    global _last_labels, _known_label_history, _recognition_frame_counter
 
     registered = EmbeddingCache.get_all()
     registered_count = len(registered) if registered else 0
 
     detections = _detect_human_faces(img)
     tracked = _face_tracker.update(detections)
+    logger.debug("Live frame: %d detections, %d tracked", len(detections), len(tracked))
 
     now = time.time()
     active_tids = {face["track_id"] for face in tracked}
@@ -347,6 +350,7 @@ def _live_recognize(img):
                     "time": now,
                 })
             del _last_labels[tid]
+            _recognition_retries.pop(tid, None)
 
     _known_label_history = [h for h in _known_label_history if (now - h["time"]) < 5.0]
 
@@ -363,48 +367,69 @@ def _live_recognize(img):
             "status": "no_registered",
         } for face in tracked], registered_count
 
+    _recognition_frame_counter += 1
+    is_recognition_frame = (_recognition_frame_counter % _RECOGNITION_INTERVAL == 0)
+
     h_img, w_img = img.shape[:2]
 
-    faces_to_recognize = []
-    for face in tracked:
-        tid = face["track_id"]
-        previous = _last_labels.get(tid)
-        if previous and previous["is_known"]:
-            continue
-        faces_to_recognize.append(face)
-
-    if faces_to_recognize:
-        def _recognize_wrapper(face):
-            return face["track_id"], _recognize_one_face(img, face["region"], w_img, h_img)
-
-        max_workers = min(len(faces_to_recognize), 4)
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_recognize_wrapper, f): f for f in faces_to_recognize}
-            for future in as_completed(futures):
-                tid, (match, conf) = future.result()
-                if match:
-                    _last_labels[tid] = {
-                        "label": match["name"], "is_known": True,
-                        "confidence": conf, "status": "recognized",
-                        "region": next((f["region"] for f in tracked if f["track_id"] == tid), {}),
-                    }
-                else:
-                    previous = _last_labels.get(tid)
-                    if previous and previous.get("is_known"):
-                        pass
+    if is_recognition_frame:
+        faces_to_recognize = []
+        for face in tracked:
+            tid = face["track_id"]
+            previous = _last_labels.get(tid)
+            if previous:
+                if previous["is_known"]:
+                    cache_age = now - previous.get("cache_time", 0)
+                    if cache_age < _RECOGNITION_CACHE_TTL:
+                        continue
                     else:
+                        previous["cache_time"] = now
+                        continue
+                else:
+                    retries = _recognition_retries.get(tid, 0)
+                    if retries >= _MAX_RECOGNITION_RETRIES:
+                        cache_age = previous.get("cache_time", 0)
+                        if (now - cache_age) < _RECOGNITION_CACHE_TTL:
+                            continue
+                        else:
+                            _recognition_retries.pop(tid, None)
+                            _last_labels.pop(tid, None)
+            faces_to_recognize.append(face)
+
+        if faces_to_recognize:
+            def _recognize_wrapper(face):
+                return face["track_id"], _recognize_one_face(img, face["region"], w_img, h_img)
+
+            max_workers = min(len(faces_to_recognize), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_recognize_wrapper, f): f for f in faces_to_recognize}
+                for future in as_completed(futures):
+                    tid, (match, conf) = future.result()
+                    if match:
+                        _recognition_retries.pop(tid, None)
+                        _last_labels[tid] = {
+                            "label": match["name"], "is_known": True,
+                            "confidence": conf, "status": "recognized",
+                            "cache_time": now,
+                            "region": next((f["region"] for f in tracked if f["track_id"] == tid), {}),
+                        }
+                    else:
+                        retries = _recognition_retries.get(tid, 0) + 1
+                        _recognition_retries[tid] = retries
                         region = next((f["region"] for f in tracked if f["track_id"] == tid), {})
-                        recovered = _try_recover_label(region)
-                        if recovered:
+                        if retries < _MAX_RECOGNITION_RETRIES:
                             _last_labels[tid] = {
-                                "label": recovered["label"], "is_known": True,
-                                "confidence": recovered["confidence"], "status": "recognized",
+                                "label": "", "is_known": False,
+                                "confidence": 0, "status": "checking",
+                                "cache_time": now,
                                 "region": region,
                             }
                         else:
+                            _recognition_retries.pop(tid, None)
                             _last_labels[tid] = {
                                 "label": "Unknown", "is_known": False,
                                 "confidence": conf, "status": "unknown",
+                                "cache_time": now,
                                 "region": region,
                             }
 
@@ -424,30 +449,20 @@ def _live_recognize(img):
             })
         else:
             region = face["region"]
-            recovered = _try_recover_label(region)
-            if recovered:
-                _last_labels[tid] = {
-                    "label": recovered["label"], "is_known": True,
-                    "confidence": recovered["confidence"], "status": "recognized",
-                    "region": region,
-                }
-                results.append({
-                    "region": region,
-                    "track_id": tid,
-                    "label": recovered["label"],
-                    "is_known": True,
-                    "confidence": recovered["confidence"],
-                    "status": "recognized",
-                })
-            else:
-                results.append({
-                    "region": region,
-                    "track_id": tid,
-                    "label": "",
-                    "is_known": False,
-                    "confidence": 0,
-                    "status": "checking",
-                })
+            _last_labels[tid] = {
+                "label": "", "is_known": False,
+                "confidence": 0, "status": "checking",
+                "cache_time": now,
+                "region": region,
+            }
+            results.append({
+                "region": region,
+                "track_id": tid,
+                "label": "",
+                "is_known": False,
+                "confidence": 0,
+                "status": "checking",
+            })
     return results, registered_count
 
 
@@ -456,18 +471,26 @@ def _try_recover_label(region):
         return None
     cx = region.get("x", 0) + region.get("w", 0) // 2
     cy = region.get("y", 0) + region.get("h", 0) // 2
+    now = time.time()
     best = None
     best_dist = float("inf")
     for h in _known_label_history:
+        if (now - h["time"]) > 2.0:
+            continue
+        if h.get("confidence", 0) < 80:
+            continue
         dx = cx - h["cx"]
         dy = cy - h["cy"]
         d = (dx * dx + dy * dy) ** 0.5
         if d < best_dist:
             best_dist = d
             best = h
-    if best and best_dist < 150:
+    if best and best_dist < 60:
+        logger.debug("Label recovered: '%s' at dist=%.0f (conf=%.1f%%)",
+                      best["label"], best_dist, best["confidence"])
         return {"label": best["label"], "confidence": best["confidence"]}
     return None
+
 @api_view(["POST"])
 def live_detect(request):
     t0 = time.time()
@@ -480,7 +503,10 @@ def live_detect(request):
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             return Response({"success": False, "message": "Invalid image."}, status=status.HTTP_400_BAD_REQUEST)
+        img = ImagePreprocessor.auto_resize_numpy(img)
         results, registered_count = _live_recognize(img)
+        latency_ms = round((time.time() - t0) * 1000)
+        logger.info("Live detect: %d face(s), %d registered, %dms", len(results), registered_count, latency_ms)
         return Response({
             "success": True,
             "face_count": len(results),
@@ -489,8 +515,7 @@ def live_detect(request):
             "latency_ms": round((time.time() - t0) * 1000),
         })
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Live detect failed")
         return Response({
             "success": False, "message": str(e), "faces": [],
             "latency_ms": round((time.time() - t0) * 1000),
@@ -511,9 +536,11 @@ def live_capture(request):
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             return Response({"success": False, "message": "Invalid image."}, status=status.HTTP_400_BAD_REQUEST)
+        img = ImagePreprocessor.auto_resize_numpy(img)
         results, registered_count = _live_recognize(img)
         faces = []
         image_record = None
+        captures = 0
         for r in results:
             region = r.get("region", {})
             label = r.get("label", "Unknown")
@@ -532,6 +559,7 @@ def live_capture(request):
             captured = (now - last_cap) > 5
             if captured:
                 _capture_cooldown[cooldown_key] = now
+                captures += 1
                 if image_record is None:
                     image_record = UploadedImage.objects.create(user=request.user)
                     image_record.image.save(f"capture_{uuid.uuid4().hex}.jpg", ContentFile(raw), save=True)
@@ -550,14 +578,16 @@ def live_capture(request):
                 "confidence": match_confidence, "captured": captured,
                 "status": face_status,
             })
+        latency_ms = round((time.time() - t0) * 1000)
+        logger.info("Live capture: %d face(s), %d captured, %d registered, %dms",
+                     len(faces), captures, registered_count, latency_ms)
         return Response({
             "success": True, "face_count": len(faces), "faces": faces,
             "registered_faces": registered_count,
-            "latency_ms": round((time.time() - t0) * 1000),
+            "latency_ms": latency_ms,
         })
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Live capture failed")
         return Response({
             "success": False, "message": str(e), "faces": [],
             "latency_ms": round((time.time() - t0) * 1000),

@@ -1,10 +1,19 @@
+import logging
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from api.models import KnownFace, FaceImage
 from api.serializers import KnownFaceSerializer, KnownFaceDetailSerializer, FaceImageSerializer
 from api.services import FaceRecognitionService
+from api.services.retinaface_service import RetinaFaceService
+from api.services.embedding_cache import EmbeddingCache
 from api.utils.image_utils import validate_image_file
+from api.utils.preprocessing import ImagePreprocessor
+from api.utils.preprocessing import ImageQualityValidator
+from api.utils.preprocessing import FaceValidator
+from api.config.thresholds import Thresholds
+
+logger = logging.getLogger(__name__)
 
 
 def _process_face_images(known_face, image_files):
@@ -13,6 +22,7 @@ def _process_face_images(known_face, image_files):
         try:
             validate_image_file(img_file)
         except ValueError as e:
+            logger.warning("Skipping invalid image file: %s", e)
             continue
 
         face_img = FaceImage.objects.create(
@@ -20,12 +30,33 @@ def _process_face_images(known_face, image_files):
             image=img_file,
         )
 
+        ImagePreprocessor.fix_exif_orientation(face_img.image.path)
+        ImagePreprocessor.auto_resize(face_img.image.path)
+
+        quality = ImageQualityValidator.validate(face_img.image.path)
+        if not quality["valid"]:
+            logger.info("Image %s rejected by quality check: %s", img_file.name, [i["type"] for i in quality["issues"]])
+            face_img.image.delete(save=False)
+            face_img.delete()
+            continue
+
+        detected = RetinaFaceService.detect_faces(face_img.image.path)
+        face_result = FaceValidator.validate_faces(detected)
+        if not face_result["valid"]:
+            logger.info("Image %s rejected by face validation: %s", img_file.name, [i["type"] for i in face_result["issues"]])
+            face_img.image.delete(save=False)
+            face_img.delete()
+            continue
+
         embedding = FaceRecognitionService.get_embedding(face_img.image.path)
         if embedding:
             face_img.embedding = embedding
             face_img.save(update_fields=["embedding"])
             results.append(face_img)
+        else:
+            logger.warning("Could not extract embedding from %s", img_file.name)
 
+    logger.info("Processed %d/%d images for '%s'", len(results), len(image_files), known_face.name)
     return results
 
 
@@ -54,6 +85,18 @@ def create_known_face(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if len(image_files) < Thresholds.REFERENCE_MIN_IMAGES:
+        return Response(
+            {"success": False, "message": f"Please upload at least {Thresholds.REFERENCE_MIN_IMAGES} reference images for reliable recognition."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if len(image_files) > Thresholds.REFERENCE_MAX_IMAGES:
+        return Response(
+            {"success": False, "message": f"Maximum {Thresholds.REFERENCE_MAX_IMAGES} reference images allowed. You uploaded {len(image_files)}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if KnownFace.objects.filter(user=request.user, name=name).exists():
         return Response(
             {"success": False, "message": "A face with this name is already registered."},
@@ -70,11 +113,14 @@ def create_known_face(request):
 
     if not processed:
         known_face.delete()
+        logger.warning("Registration failed for '%s': no valid embeddings extracted", name)
         return Response(
             {"success": False, "message": "Could not extract face embeddings from any of the uploaded images. Try clearer photos."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    EmbeddingCache.refresh()
+    logger.info("Registered '%s' with %d image(s)", name, len(processed))
     return Response(
         {
             "success": True,
@@ -102,7 +148,17 @@ def add_face_images(request, pk):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    current_count = known_face.face_images.count()
+    total_after = current_count + len(image_files)
+    if total_after > Thresholds.REFERENCE_MAX_IMAGES:
+        allowed = Thresholds.REFERENCE_MAX_IMAGES - current_count
+        return Response(
+            {"success": False, "message": f"This person already has {current_count} image(s). Maximum is {Thresholds.REFERENCE_MAX_IMAGES}. You can add {allowed} more."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     processed = _process_face_images(known_face, image_files)
+    EmbeddingCache.refresh()
     return Response(
         {
             "success": True,
@@ -140,6 +196,7 @@ def update_known_face(request, pk):
     serializer = KnownFaceDetailSerializer(face, data=request.data, partial=True)
     if serializer.is_valid():
         serializer.save()
+        EmbeddingCache.refresh()
         return Response(
             {"success": True, "data": KnownFaceSerializer(face).data}
         )
@@ -160,6 +217,8 @@ def delete_known_face(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    face_name = face.name
+
     for fi in face.face_images.all():
         try:
             fi.image.delete(save=False)
@@ -168,6 +227,8 @@ def delete_known_face(request, pk):
         fi.delete()
 
     face.delete()
+    EmbeddingCache.refresh()
+    logger.info("Deleted known face '%s' (id=%s)", face_name, pk)
     return Response(
         {"success": True, "message": "Known face deleted."},
         status=status.HTTP_200_OK,
@@ -185,8 +246,17 @@ def delete_face_image(request, pk, image_pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    current_count = face.face_images.count()
+    if current_count <= Thresholds.REFERENCE_MIN_IMAGES:
+        return Response(
+            {"success": False, "message": f"Cannot delete. A minimum of {Thresholds.REFERENCE_MIN_IMAGES} reference images is required for reliable recognition."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     face_image.image.delete(save=False)
     face_image.delete()
+    EmbeddingCache.refresh()
+    logger.info("Deleted image %s from '%s'", image_pk, face.name)
     return Response(
         {"success": True, "message": "Face image deleted."},
         status=status.HTTP_200_OK,

@@ -68,10 +68,14 @@ function RegistrationForm({ onDone }) {
 
   const handleFiles = (e) => {
     const selected = Array.from(e.target.files)
-    setFiles((prev) => [...prev, ...selected])
+    const capped = selected.slice(0, 5 - files.length)
+    if (selected.length > capped.length) {
+      setError(`Only ${5 - files.length} more image(s) allowed (max 5).`)
+    }
+    setFiles((prev) => [...prev, ...capped])
     setPreviews((prev) => [
       ...prev,
-      ...selected.map((f) => URL.createObjectURL(f)),
+      ...capped.map((f) => URL.createObjectURL(f)),
     ])
   }
 
@@ -82,7 +86,7 @@ function RegistrationForm({ onDone }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!name || files.length === 0) return
+    if (!name || files.length < 3) return
     setSubmitting(true)
     setError('')
     try {
@@ -115,9 +119,16 @@ function RegistrationForm({ onDone }) {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Face Photos (1 or more)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Face Photos (3-5 images required)</label>
           <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFiles}
             className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100" />
+          {previews.length > 0 && (
+            <p className={`text-xs mt-1 ${previews.length < 3 ? 'text-red-500' : previews.length > 5 ? 'text-orange-500' : 'text-green-600'}`}>
+              {previews.length} of 5 images selected
+              {previews.length < 3 && ` — need at least ${3 - previews.length} more`}
+              {previews.length > 5 && ` — only the first 5 will be uploaded`}
+            </p>
+          )}
         </div>
 
         {previews.length > 0 && (
@@ -134,9 +145,9 @@ function RegistrationForm({ onDone }) {
 
         {error && <p className="text-red-500 text-sm">{error}</p>}
 
-        <button type="submit" disabled={submitting}
+        <button type="submit" disabled={submitting || files.length < 3}
           className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 transition disabled:opacity-50 font-medium">
-          {submitting ? 'Registering...' : `Register Face (${files.length} image${files.length !== 1 ? 's' : ''})`}
+          {submitting ? 'Registering...' : files.length < 3 ? `Need ${3 - files.length} more image${3 - files.length !== 1 ? 's' : ''}` : `Register Face (${files.length} images)`}
         </button>
       </form>
     </div>
@@ -240,7 +251,10 @@ function PersonCard({ face, onDelete, onUpdate }) {
           <div>
             <h3 className="font-semibold text-gray-900 text-lg hover:text-primary-600 transition">{face.name}</h3>
             {face.email && <p className="text-xs text-gray-500">{face.email}</p>}
-            <p className="text-xs text-gray-400">{face.image_count} image{face.image_count !== 1 ? 's' : ''}</p>
+            <p className={`text-xs ${face.image_count < 3 ? 'text-orange-500 font-medium' : 'text-gray-400'}`}>
+              {face.image_count} image{face.image_count !== 1 ? 's' : ''}
+              {face.image_count < 3 && ' (add more for better accuracy)'}
+            </p>
           </div>
         </div>
       </Link>
@@ -250,8 +264,10 @@ function PersonCard({ face, onDelete, onUpdate }) {
           <div key={img.id} className="relative group">
             <img src={`http://localhost:8000${img.image}`} alt=""
               className="w-16 h-16 object-cover rounded-lg border" />
-            <button onClick={() => handleDeleteImage(img.id)}
-              className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition">x</button>
+            {face.image_count > 3 && (
+              <button onClick={() => handleDeleteImage(img.id)}
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition">x</button>
+            )}
           </div>
         ))}
         <button onClick={() => setAdding(!adding)}

@@ -30,7 +30,7 @@ class FaceTracker:
             for oi, old_box in enumerate(old_boxes):
                 iou = _iou(det, old_box)
                 cp = _center_distance(det, old_box)
-                combined = iou * 0.5 + (1.0 - min(cp, 1.0)) * 0.5
+                combined = iou * self._iou_ratio_weight() + (1.0 - min(cp, 1.0)) * (1.0 - self._iou_ratio_weight())
                 scores.append((combined, ni, oi))
         scores.sort(reverse=True)
 
@@ -54,6 +54,9 @@ class FaceTracker:
 
         self._merge_close_tracks(now)
         return self._export()
+
+    def _iou_ratio_weight(self):
+        return 0.6
 
     def _merge_close_tracks(self, now):
         ids = list(self._tracks.keys())

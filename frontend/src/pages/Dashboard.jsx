@@ -66,7 +66,6 @@ export default function Dashboard() {
                   <span className="text-sm text-gray-800">{r.name}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  {r.confidence != null && <span className="text-xs text-gray-400">{r.confidence.toFixed(1)}%</span>}
                   <span className="text-xs text-gray-400">{new Date(r.time).toLocaleTimeString()}</span>
                 </div>
               </Link>

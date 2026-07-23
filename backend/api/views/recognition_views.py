@@ -1,9 +1,12 @@
+import logging
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from api.models import DetectedFace, UploadedImage, RecognitionLog
 from api.serializers import RecognitionLogSerializer
 from api.services import FaceRecognitionService, RecognitionService
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(["POST"])
@@ -38,7 +41,7 @@ def recognize_faces(request):
                 if crop_path:
                     analysis_path = crop_path
             except Exception:
-                pass
+                logger.debug("Could not crop face %s, using full image", face.id)
 
             embedding = FaceRecognitionService.get_embedding(analysis_path)
             if embedding:
@@ -54,6 +57,8 @@ def recognize_faces(request):
 
         if face.embedding:
             match, distance, confidence = RecognitionService.recognize_face(face.embedding)
+            logger.info("Recognition for face %s: match=%s, distance=%.4f, confidence=%.2f",
+                         face.id, match.name if match else None, distance, confidence)
             log = RecognitionLog.objects.create(
                 detected_face=face,
                 matched_face=match,
@@ -86,4 +91,6 @@ def verify_faces(request):
         )
 
     result = RecognitionService.verify_pair(img1.image.path, img2.image.path)
+    logger.info("Verify pair: img1=%s, img2=%s, verified=%s, distance=%s, confidence=%s",
+                image_id_1, image_id_2, result.get("verified"), result.get("distance"), result.get("confidence"))
     return Response({"success": True, "verification": result})
